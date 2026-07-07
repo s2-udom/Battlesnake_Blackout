@@ -76,26 +76,21 @@ jobs:
             IMAGE="${{ needs.build.outputs.image_tag }}"
             aws ecr get-login-password --region eu-central-1 \
               | docker login --username AWS --password-stdin \
-                ${{ steps.login-ecr.outputs.registry }}
+                317356818920.dkr.ecr.eu-central-1.amazonaws.com
             docker pull $IMAGE
-            docker stop battlesnake-new 2>/dev/null || true
-            docker run -d --name battlesnake-new \
-              -p 8001:8000 --restart unless-stopped $IMAGE
-            for i in {1..10}; do
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/)
-              if [ "$STATUS" == "200" ]; then break; fi
-              sleep 2
-            done
-            if [ "$STATUS" != "200" ]; then
-              docker stop battlesnake-new && docker rm battlesnake-new
-              exit 1
-            fi
-            sudo sed -i 's/localhost:8000/localhost:8001/' /etc/nginx/conf.d/battlesnake.conf
-            sudo nginx -s reload
             docker stop battlesnake 2>/dev/null || true
             docker rm battlesnake 2>/dev/null || true
-            docker rename battlesnake-new battlesnake
-            sudo sed -i 's/localhost:8001/localhost:8000/' /etc/nginx/conf.d/battlesnake.conf
-            sudo nginx -s reload
-            docker image prune -f
-            echo "Deploy complete: $IMAGE"
+            docker run -d --name battlesnake \
+              -p 8000:8000 \
+              --restart unless-stopped \
+              $IMAGE
+            for i in {1..10}; do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/)
+              if [ "$STATUS" == "200" ]; then echo "Deploy successful"; exit 0; fi
+              sleep 2
+            done
+            echo "Snake failed to start" && docker logs battlesnake && exit 1
+
+
+
+
