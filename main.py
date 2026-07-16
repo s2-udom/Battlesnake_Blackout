@@ -1,25 +1,6 @@
-from fastapi import FastAPI
+from battlesnake_server import start_server
+from hungry_agent import HungryAgent
 
-app = FastAPI()
-
-@app.get("/")
-def index():
-    return {
-        "apiversion": "1",
-        "author": "yourname",
-        "color": "#ff0000",
-        "head": "default",
-        "tail": "default"
-    }
-
-@app.post("/start")
-def start(data: dict):
-    return {}
-
-@app.post("/move")
-def move(data: dict):
-    return {"move": "up"}
-
-@app.post("/end")
-def end(data: dict):
-    return {}
+if __name__ == "__main__":
+    agent = HungryAgent()
+    start_server(agent=agent, port=8000)
