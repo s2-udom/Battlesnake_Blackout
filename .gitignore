@@ -1,6 +1,4 @@
-.vscode/
 __pycache__/
-*.pyc
-.env
-*.pem
-.DS_Store
+.ipynb_checkpoints
+.python-version
+uv.lock

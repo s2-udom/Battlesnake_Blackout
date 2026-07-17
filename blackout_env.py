@@ -8,11 +8,18 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         super().__init__()
         self.config = config or {}
         
-        # 1. Start the 4-player chaos
         self.game_config = hisss.standard_config()
         try: 
             self.game_config.num_players = 4
             self.game_config.all_actions_legal = True 
+            
+            # Use the official 15x15 board size
+            self.game_config.w = 15
+            self.game_config.h = 15
+            
+            # Return to official tournament food settings!
+            self.game_config.food_spawn_chance = 15  
+            self.game_config.min_food = 1           
         except Exception: pass
             
         self.env = hisss.BattleSnakeGame(self.game_config)
@@ -23,8 +30,8 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         
         single_action_space = gym.spaces.Discrete(4)
         single_agent_obs_space = gym.spaces.Dict({
-            "obs": gym.spaces.Box(low=0, high=255, shape=(21, 21, 22), dtype=np.uint8),
-            "state": gym.spaces.Box(low=0, high=255, shape=(21, 21, 22), dtype=np.uint8)
+            "obs": gym.spaces.Box(low=0, high=255, shape=(29, 29, 22), dtype=np.uint8),
+            "state": gym.spaces.Box(low=0, high=255, shape=(29, 29, 22), dtype=np.uint8)
         })
         
         self.action_space = gym.spaces.Dict({
@@ -36,9 +43,8 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         
         self.last_actions = {i: 0 for i in range(self.num_snakes)}
         self.turn_count = 0
-        self.last_obs = None
-        self.last_metrics = {}
         self.terminated_agents = set() 
+        self.previous_lengths = {}
 
     def _get_unpacked_obs(self):
         obs_dict, _, _ = self.env.get_obs()
@@ -54,43 +60,50 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 }
             else:
                 unpacked[f"snake_{i}"] = {
-                    "obs": np.zeros((21, 21, 22), dtype=np.uint8), 
-                    "state": np.zeros((21, 21, 22), dtype=np.uint8)
+                    "obs": np.zeros((29, 29, 22), dtype=np.uint8), 
+                    "state": np.zeros((29, 29, 22), dtype=np.uint8)
                 }
         return unpacked
-
-    def _get_metrics(self, state_tensor):
-        heads = np.argwhere(state_tensor[:, :, 1] == 1)
-        head = tuple(heads[0]) if len(heads) > 0 else None
-        
-        foods = np.argwhere(state_tensor[:, :, 0] == 1)
-        food_list = [tuple(f) for f in foods]
-        
-        length = int(np.sum(state_tensor[:, :, 2])) + 1
-        return {"head": head, "food_list": food_list, "length": length}
-
-    def _closest_food_dist(self, head, foods):
-        if not head or not foods: return 999
-        return min([abs(head[0] - f[0]) + abs(head[1] - f[1]) for f in foods])
 
     def reset(self, *, seed=None, options=None):
         self.env.reset()
         self.turn_count = 0
         self.last_actions = {i: 0 for i in range(self.num_snakes)}
-        self.last_obs = self._get_unpacked_obs()
-        
-        self.last_metrics = {}
-        for aid in self.agent_ids:
-            self.last_metrics[aid] = self._get_metrics(self.last_obs[aid]["state"])
-            
         self.terminated_agents = set()
+        
+        # We only need to track previous lengths to calculate the food delta (+3.0)
+        self.previous_lengths = {f"snake_{i}": 3 for i in range(self.num_snakes)} 
+        
         infos = {agent_id: {} for agent_id in self.agent_ids}
-        return self.last_obs, infos
+        return self._get_unpacked_obs(), infos
 
     def step(self, action_dict):
         self.turn_count += 1
         
         alive_ids = self.env.players_alive()
+        alive_count_start = len(alive_ids)
+        
+        # ---------------------------------------------------------
+        # PRE-STEP: Grab exact coordinates and lengths via the C++ State
+        # ---------------------------------------------------------
+        pre_step_state = self.env.get_state()
+        
+        head_coords_pre_step = {}
+        body_coords_pre_step = {}
+        lengths_pre_step = {}
+        
+        for i in alive_ids:
+            agent_id = f"snake_{i}"
+            # snake_pos contains the full body array. Index 0 is the head.
+            snake_body = pre_step_state.snake_pos[i] 
+            
+            head_coords_pre_step[agent_id] = snake_body[0]
+            body_coords_pre_step[agent_id] = snake_body # Save the whole body
+            lengths_pre_step[agent_id] = int(pre_step_state.snake_len[i])
+
+        # ---------------------------------------------------------
+        # EXECUTE STEP
+        # ---------------------------------------------------------
         actions = []
         penalty_flags = {i: False for i in range(self.num_snakes)}
         opposites = {0: 2, 2: 0, 1: 3, 3: 1}
@@ -100,29 +113,31 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             if self.turn_count > 1:
                 last_act = self.last_actions[i]
                 if action == opposites.get(last_act):
-                    action = (last_act + 1) % 4  
+                    action = last_act  # Keep moving straight instead of dying!
                     penalty_flags[i] = True
                     
             actions.append(action)
             self.last_actions[i] = action
 
-        prev_metrics = self.last_metrics
-
         try:
             raw_rewards, done, _ = self.env.step(tuple(actions))
-        except ValueError as e:
+        except ValueError:
             raw_rewards, done = [-2.0]*len(alive_ids), True
 
         current_alive = self.env.players_alive()
         game_over = bool(done) or len(current_alive) <= 1
+        died_this_turn = [f"snake_{snake}" for snake in alive_ids if snake not in current_alive]
 
-        obs, curr_metrics, rewards, infos = {}, {}, {}, {}
-        terminations = {"__all__": game_over}
-        truncations = {"__all__": False}
+        obs, rewards, infos = {}, {}, {}
+        terminations, truncations = {"__all__": game_over}, {"__all__": False}
 
         if not game_over:
             obs_unpacked = self._get_unpacked_obs()
+            current_state = self.env.get_state()
 
+        # ---------------------------------------------------------
+        # REWARD ALLOCATION
+        # ---------------------------------------------------------
         for i in range(self.num_snakes):
             agent_id = f"snake_{i}"
             
@@ -131,75 +146,82 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
 
             if game_over:
                 obs[agent_id] = {
-                    "obs": np.zeros((21, 21, 22), dtype=np.uint8), 
-                    "state": np.zeros((21, 21, 22), dtype=np.uint8)
+                    "obs": np.zeros((29, 29, 22), dtype=np.uint8), 
+                    "state": np.zeros((29, 29, 22), dtype=np.uint8)
                 }
-                curr_metrics[agent_id] = {"head": None, "food_list": [], "length": 1}
             else:
                 obs[agent_id] = obs_unpacked[agent_id]
-                curr_metrics[agent_id] = self._get_metrics(obs[agent_id]["state"])
 
             is_dead = i not in current_alive
             terminations[agent_id] = game_over or is_dead
             truncations[agent_id] = False
             infos[agent_id] = {}
 
-            # --- RULE 4: CLOSING THE LOOPHOLE ---
             raw = float(raw_rewards[alive_ids.index(i)]) if i in alive_ids else 0.0
-
-            if is_dead or raw < 0:
-                # 1. The Death State (Overrides everything)
-                death_penalty = -10.0 + (self.turn_count * 0.2)
-                rewards[agent_id] = min(-2.0, death_penalty)
-            elif game_over:
-                # 2. The Victory State (Last snake standing!)
-                rewards[agent_id] = 10.0 + (self.turn_count * 0.1)
-            else:
-                # 3. The Survival State
-                step_reward = -2.0 if penalty_flags[i] else 0.0
-                rewards[agent_id] = raw + 0.01 + step_reward
-                
-                p_mets = prev_metrics.get(agent_id, {"head": None, "food_list": [], "length": 0})
-                c_mets = curr_metrics.get(agent_id, {"head": None, "food_list": [], "length": 0})
-                
-                if c_mets["length"] > 3:
-                    rewards[agent_id] += 0.01
-                    
-                prev_head = p_mets["head"]
-                curr_head = c_mets["head"]
-                prev_foods = p_mets["food_list"]
-                curr_foods = c_mets["food_list"]
-                
-                if curr_head and prev_head:
-                    if curr_head in prev_foods:
-                        rewards[agent_id] += 1.0
-                        
-                    if prev_foods and curr_foods:
-                        dist_before = self._closest_food_dist(prev_head, prev_foods)
-                        dist_after = self._closest_food_dist(curr_head, curr_foods)
-                        if dist_after < dist_before: rewards[agent_id] += 0.05
-                        elif dist_after > dist_before: rewards[agent_id] -= 0.05
-                            
-                    enemy_heads = []
-                    for layer_idx in range(self.num_snakes):
-                        if layer_idx != i: 
-                            e_id = f"snake_{layer_idx}"
-                            if not game_over and e_id in curr_metrics:
-                                e_head = curr_metrics[e_id]["head"]
-                                if e_head: enemy_heads.append(e_head)
-                    
-                    if enemy_heads:
-                        closest_e_dist_curr = min([abs(curr_head[0] - eh[0]) + abs(curr_head[1] - eh[1]) for eh in enemy_heads])
-                        closest_e_dist_prev = min([abs(prev_head[0] - eh[0]) + abs(prev_head[1] - eh[1]) for eh in enemy_heads])
-                        
-                        if c_mets["length"] > 5 and closest_e_dist_curr < closest_e_dist_prev:
-                            rewards[agent_id] += 0.05 
             
+            # 1. FIX C: REDUCED DEATH PENALTY (Tiered based on placement)
+            if is_dead or raw < 0:
+                # Halved from -10.0 to encourage risky plays!
+                if alive_count_start >= 4: base_penalty = -5.0
+                elif alive_count_start == 3: base_penalty = -3.0
+                elif alive_count_start == 2: base_penalty = -1.0
+                else: base_penalty = -5.0
+                
+                # Still reward them for dying massive instead of dying small
+                length_bonus = self.previous_lengths.get(agent_id, 3) * 0.5
+                rewards[agent_id] = min(base_penalty + length_bonus, -0.5) 
+                
+            elif game_over:
+                rewards[agent_id] = 15.0 
+            else:
+                # 2. BASE STEP PENALTIES
+                step_reward = -2.0 if penalty_flags[i] else 0.0
+                rewards[agent_id] = step_reward
+                
+                # 3. EXACT FOOD REWARD & STARVATION TRACKING
+                current_true_length = int(current_state.snake_len[i])
+                current_true_health = int(current_state.snake_health[i])
+                
+                # If they grew, give them points
+                if current_true_length > self.previous_lengths.get(agent_id, 3):
+                    rewards[agent_id] += 3.0
+                    self.previous_lengths[agent_id] = current_true_length
+                
+                if current_true_health < 30:
+                    rewards[agent_id] -= 0.05
+                    
+                # 4. FIX A: EXACT H2H KILL AND TRAPPING VERIFICATION
+                for dead_id in died_this_turn:
+                    if dead_id != agent_id:
+                        my_head = head_coords_pre_step.get(agent_id)
+                        my_body = body_coords_pre_step.get(agent_id, [])
+                        dead_head = head_coords_pre_step.get(dead_id)
+                        
+                        if my_head and dead_head and my_body:
+                            my_len = lengths_pre_step.get(agent_id, 0)
+                            dead_len = lengths_pre_step.get(dead_id, 0)
+                            
+                            head_dist = abs(my_head[0] - dead_head[0]) + abs(my_head[1] - dead_head[1])
+                            
+                            # 4a. EXACT KILL RULE: Heads collided and we were strictly longer
+                            if head_dist <= 2 and my_len > dead_len:
+                                rewards[agent_id] += 5.0
+                            else:
+                                # 4b. TRAP / CUT-OFF RULE: Did they die adjacent to my body?
+                                # We skip my_body[0] because that's our head (handled above)
+                                is_trap = False
+                                for segment in my_body[1:]:
+                                    body_dist = abs(segment[0] - dead_head[0]) + abs(segment[1] - dead_head[1])
+                                    if body_dist <= 1: # They crashed right into our side!
+                                        is_trap = True
+                                        break
+                                
+                                if is_trap:
+                                    rewards[agent_id] += 7.0
+
             if terminations[agent_id]:
                 self.terminated_agents.add(agent_id)
         
-        self.last_metrics = curr_metrics
-        self.last_obs = obs
         return obs, rewards, terminations, truncations, infos
     
     def render(self):
