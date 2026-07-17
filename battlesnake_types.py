@@ -90,7 +90,7 @@ class Board(BaseModel):
     snakes: List[Snake]
 
 class GameState(BaseModel):
-    turn: in
+    turn: int
     game: Game
     board: Board
     you: Snake
