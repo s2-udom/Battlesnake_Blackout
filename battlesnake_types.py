@@ -119,7 +119,15 @@ class Direction(str, Enum):
 
 class MoveAction(BaseModel):
     move: Direction
-
+@staticmethod
+    def from_board_delta(delta: tuple) -> 'Direction':
+        mapping = {
+            (0, 1): Direction.UP,
+            (0, -1): Direction.DOWN,
+            (-1, 0): Direction.LEFT,
+            (1, 0): Direction.RIGHT,
+        }
+        return mapping.get(delta, Direction.UP)
 # ---------------------------------------------------------
 # Base Agent Interface
 # ---------------------------------------------------------
