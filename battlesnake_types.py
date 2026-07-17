@@ -90,7 +90,7 @@ class Board(BaseModel):
     snakes: List[Snake]
 
 class GameState(BaseModel):
-    turn: int
+    turn: in
     game: Game
     board: Board
     you: Snake
@@ -117,9 +117,7 @@ class Direction(str, Enum):
     @property
     def dy(self) -> int: return self.board_delta[1]
 
-class MoveAction(BaseModel):
-    move: Direction
-@staticmethod
+    @staticmethod
     def from_board_delta(delta: tuple) -> 'Direction':
         mapping = {
             (0, 1): Direction.UP,
@@ -128,6 +126,11 @@ class MoveAction(BaseModel):
             (1, 0): Direction.RIGHT,
         }
         return mapping.get(delta, Direction.UP)
+
+class MoveAction(BaseModel):
+    def dx(self) -> int: return self.board_delta[0]
+    @property
+    def dy(self) -> int: return self.board_delta[1]
 # ---------------------------------------------------------
 # Base Agent Interface
 # ---------------------------------------------------------
