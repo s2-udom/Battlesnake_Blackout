@@ -128,9 +128,16 @@ class Direction(str, Enum):
         return mapping.get(delta, Direction.UP)
 
 class MoveAction(BaseModel):
-    def dx(self) -> int: return self.board_delta[0]
+    move: Direction
+    shout: Optional[str] = None
+
+    # Keep your helper methods below if you use them
+    def dx(self) -> int: 
+        return self.move.dx
+        
     @property
-    def dy(self) -> int: return self.board_delta[1]
+    def dy(self) -> int: 
+        return self.move.dy
 # ---------------------------------------------------------
 # Base Agent Interface
 # ---------------------------------------------------------
