@@ -29,7 +29,7 @@ def policy_mapping_fn(agent_id, episode, worker, **kwargs):
 
 if __name__ == "__main__":
     print("--- Initializing Ray ---")
-    ray.init(ignore_reinit_error=True)
+    ray.init(ignore_reinit_error=True)    
     env_name = "battlesnake_blackout_v0"
     register_env(env_name, env_creator)
 
@@ -42,7 +42,7 @@ if __name__ == "__main__":
         .environment(env=env_name, env_config={})
         .framework("torch")
         .api_stack(enable_rl_module_and_learner=False, enable_env_runner_and_connector_v2=False)
-        .env_runners(num_env_runners=3, num_envs_per_env_runner=2, sample_timeout_s=300)
+        .env_runners(num_env_runners=5, num_envs_per_env_runner=1, sample_timeout_s=300)
         .resources(num_gpus=1)
         .multi_agent(
             policies={"shared_policy": (None, obs_space, act_space, {})},
@@ -56,8 +56,8 @@ if __name__ == "__main__":
                 [10_000_000, 5e-5]
             ],
             gamma=0.99,
-            train_batch_size=6144,     
-            minibatch_size=384,
+            train_batch_size=5120,     
+            minibatch_size=320,
             num_epochs=5,
             model={
                 # Layer 1: Shrinks 29x29 to 13x13
@@ -136,7 +136,7 @@ if __name__ == "__main__":
             current_weights = algo.get_weights(["shared_policy"])["shared_policy"]
             historical_weights.append(current_weights)
             
-            if len(historical_weights) > 25:
+            if len(historical_weights) > 20:
                 historical_weights.pop(0)
             
             random_past_weight = random.choice(historical_weights)

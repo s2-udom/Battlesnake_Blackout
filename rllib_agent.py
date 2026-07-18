@@ -37,10 +37,10 @@ class RLLibAgent(BaseAgent):
             )
             .training(
                 model={
-                    "conv_filters": [[16, [5, 5], 2], [32, [3, 3], 2], [64, [3, 3], 1]],
+                "conv_filters": [[16, [5, 5], 2], [32, [5, 5], 2], [64, [5, 5], 1]],                
                     "fcnet_hiddens": [256, 256],
                     "use_lstm": True,
-                    "max_seq_len": 20, 
+                    "max_seq_len": 32, 
                     "lstm_cell_size": 256,
                 }
             )
@@ -71,35 +71,47 @@ class RLLibAgent(BaseAgent):
             del self.active_games_memory[game_id]
 
     def _manual_encode(self, game_state: GameState) -> dict:
-        grid = np.zeros((21, 21, 22), dtype=np.uint8)
-        my_head = game_state.you.head
+        # Create the full 29x29 tensor as expected by the CNN
+        grid = np.zeros((29, 29, 22), dtype=np.uint8)
         
-        # The Ego-Centric Camera Shift (Restored to pure Cartesian math)
-        def to_ego(x, y):
-            return 10 + (x - my_head.x), 10 + (y - my_head.y)
+        my_head = game_state.you.head
+        CENTER = 14
+
+        # ---------------------------------------------------------
+        # 1. PURE CARTESIAN EGO-SHIFT
+        # Matches hisss exactly: Head at (14,14), returning (X, Y)
+        # ---------------------------------------------------------
+        def get_ego_coords(game_x, game_y):
+            dx = game_x - my_head.x
+            dy = game_y - my_head.y
+            return CENTER + dx, CENTER + dy
+
+        # ---------------------------------------------------------
+        # 2. FOG OF WAR FILTER
+        # ---------------------------------------------------------
+        def is_visible(x, y):
+            return abs(x - my_head.x) <= 5 and abs(y - my_head.y) <= 5
 
         # Layer 1: Valid Board
         for y in range(game_state.board.height):
             for x in range(game_state.board.width):
-                ex, ey = to_ego(x, y)
-                if 0 <= ex < 21 and 0 <= ey < 21:
-                    # FIX: X must come first for the C++ hisss engine!
-                    grid[ex, ey, 1] = 255
+                if is_visible(x, y):
+                    ex, ey = get_ego_coords(x, y)
+                    grid[ex, ey, 1] = 255 
 
         # Layer 0: Food
         for food in game_state.board.food:
-            ex, ey = to_ego(food.x, food.y)
-            if 0 <= ex < 21 and 0 <= ey < 21:
+            if is_visible(food.x, food.y):
+                ex, ey = get_ego_coords(food.x, food.y)
                 grid[ex, ey, 0] = 255
                 
-        # Layer 6: Your Head
-        ex, ey = to_ego(my_head.x, my_head.y) 
-        grid[ex, ey, 6] = 255
+        # Layer 6: Your Head (Always locked dead center!)
+        grid[CENTER, CENTER, 6] = 255
             
         # Layer 4: Your Body & Layer 7: Your Tail
         for idx, pt in enumerate(game_state.you.body):
-            ex, ey = to_ego(pt.x, pt.y)
-            if 0 <= ex < 21 and 0 <= ey < 21:
+            if is_visible(pt.x, pt.y):
+                ex, ey = get_ego_coords(pt.x, pt.y)
                 grid[ex, ey, 4] = 255 
                 if idx == len(game_state.you.body) - 1:
                     grid[ex, ey, 7] = 255
@@ -109,14 +121,14 @@ class RLLibAgent(BaseAgent):
         for opp in opponents:
             
             # Layer 15: Enemy Head
-            ex, ey = to_ego(opp.head.x, opp.head.y)
-            if 0 <= ex < 21 and 0 <= ey < 21:
+            if is_visible(opp.head.x, opp.head.y):
+                ex, ey = get_ego_coords(opp.head.x, opp.head.y)
                 grid[ex, ey, 15] = 255
                 
             # Layer 13: Enemy Body & Layer 16: Enemy Tail
             for idx, pt in enumerate(opp.body):
-                ex, ey = to_ego(pt.x, pt.y)
-                if 0 <= ex < 21 and 0 <= ey < 21:
+                if is_visible(pt.x, pt.y):
+                    ex, ey = get_ego_coords(pt.x, pt.y)
                     grid[ex, ey, 13] = 255 
                     if idx == len(opp.body) - 1:
                         grid[ex, ey, 16] = 255

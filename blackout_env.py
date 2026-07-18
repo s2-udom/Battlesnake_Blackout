@@ -50,19 +50,52 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         obs_dict, _, _ = self.env.get_obs()
         alive_ids = self.env.players_alive()
         
+        # Grab the C++ state so we can find exactly where every snake's head is
+        current_state = self.env.get_state()
+        
         unpacked = {}
         for i in range(self.num_snakes):
+            agent_id = f"snake_{i}"
+            
             if i in alive_ids:
                 idx = alive_ids.index(i)
-                unpacked[f"snake_{i}"] = {
-                    "obs": obs_dict["actor_obs"][idx], 
-                    "state": obs_dict["critic_obs"][idx]
+                raw_actor_obs = obs_dict["actor_obs"][idx]
+                raw_critic_obs = obs_dict["critic_obs"][idx]
+                
+                # --- APPLY 5-SQUARE BLACKOUT ---
+                # 1. Get exact head coordinate from C++ state
+                head_x, head_y = current_state.snake_pos[i][0]
+                
+                # 2. Shift coordinates to account for the 29x29 padding
+                # (A 15x15 board centered in 29x29 means a border offset of 7)
+                tensor_x = head_x + 7
+                tensor_y = head_y + 7
+                
+                # 3. Create a totally black canvas
+                masked_actor_obs = np.zeros_like(raw_actor_obs)
+                
+                # 4. Define the 5-square radius bounds
+                view_radius = 5
+                min_x = max(0, tensor_x - view_radius)
+                max_x = min(29, tensor_x + view_radius + 1)
+                
+                min_y = max(0, tensor_y - view_radius)
+                max_y = min(29, tensor_y + view_radius + 1)
+                
+                # 5. Copy ONLY the visible area into the black canvas
+                masked_actor_obs[min_x:max_x, min_y:max_y, :] = raw_actor_obs[min_x:max_x, min_y:max_y, :]
+                
+                unpacked[agent_id] = {
+                    "obs": masked_actor_obs,   # Actor sees Fog of War
+                    "state": raw_critic_obs    # Critic sees the whole board!
                 }
             else:
-                unpacked[f"snake_{i}"] = {
+                # Dead snakes see nothing
+                unpacked[agent_id] = {
                     "obs": np.zeros((29, 29, 22), dtype=np.uint8), 
                     "state": np.zeros((29, 29, 22), dtype=np.uint8)
                 }
+                
         return unpacked
 
     def reset(self, *, seed=None, options=None):
