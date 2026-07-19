@@ -29,7 +29,22 @@ def policy_mapping_fn(agent_id, episode, worker, **kwargs):
 
 if __name__ == "__main__":
     print("--- Initializing Ray ---")
-    ray.init(ignore_reinit_error=True)    
+    print("--- Connecting to Ray Cluster ---")
+    # address="auto" tells it to use the cluster instead of making a local one
+    # runtime_env automatically zips your local files and sends them to the laptops!
+    ray.init(
+        address="auto", 
+        ignore_reinit_error=True,
+        runtime_env={
+            "working_dir": ".",
+            "excludes": [
+                "*.whl",                   # Exclude massive installers
+                "battlesnake_checkpoint/", # Exclude the checkpoints
+                ".venv/",                  # Exclude the virtual environment
+                "__pycache__"              # Exclude cached files
+            ]
+        }
+    )
     env_name = "battlesnake_blackout_v0"
     register_env(env_name, env_creator)
 
