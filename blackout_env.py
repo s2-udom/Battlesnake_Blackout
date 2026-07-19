@@ -63,18 +63,13 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 raw_critic_obs = obs_dict["critic_obs"][idx]
                 
                 # --- APPLY 5-SQUARE BLACKOUT ---
-                # 1. Get exact head coordinate from C++ state
                 head_x, head_y = current_state.snake_pos[i][0]
                 
-                # 2. Shift coordinates to account for the 29x29 padding
-                # (A 15x15 board centered in 29x29 means a border offset of 7)
                 tensor_x = head_x + 7
                 tensor_y = head_y + 7
                 
-                # 3. Create a totally black canvas
                 masked_actor_obs = np.zeros_like(raw_actor_obs)
                 
-                # 4. Define the 5-square radius bounds
                 view_radius = 5
                 min_x = max(0, tensor_x - view_radius)
                 max_x = min(29, tensor_x + view_radius + 1)
@@ -82,15 +77,13 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 min_y = max(0, tensor_y - view_radius)
                 max_y = min(29, tensor_y + view_radius + 1)
                 
-                # 5. Copy ONLY the visible area into the black canvas
                 masked_actor_obs[min_x:max_x, min_y:max_y, :] = raw_actor_obs[min_x:max_x, min_y:max_y, :]
                 
                 unpacked[agent_id] = {
-                    "obs": masked_actor_obs,   # Actor sees Fog of War
-                    "state": raw_critic_obs    # Critic sees the whole board!
+                    "obs": masked_actor_obs,
+                    "state": raw_critic_obs
                 }
             else:
-                # Dead snakes see nothing
                 unpacked[agent_id] = {
                     "obs": np.zeros((29, 29, 22), dtype=np.uint8), 
                     "state": np.zeros((29, 29, 22), dtype=np.uint8)
@@ -104,7 +97,6 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         self.last_actions = {i: 0 for i in range(self.num_snakes)}
         self.terminated_agents = set()
         
-        # We only need to track previous lengths to calculate the food delta (+3.0)
         self.previous_lengths = {f"snake_{i}": 3 for i in range(self.num_snakes)} 
         
         infos = {agent_id: {} for agent_id in self.agent_ids}
@@ -114,11 +106,7 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         self.turn_count += 1
         
         alive_ids = self.env.players_alive()
-        alive_count_start = len(alive_ids)
         
-        # ---------------------------------------------------------
-        # PRE-STEP: Grab exact coordinates and lengths via the C++ State
-        # ---------------------------------------------------------
         pre_step_state = self.env.get_state()
         
         head_coords_pre_step = {}
@@ -127,16 +115,12 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         
         for i in alive_ids:
             agent_id = f"snake_{i}"
-            # snake_pos contains the full body array. Index 0 is the head.
             snake_body = pre_step_state.snake_pos[i] 
             
             head_coords_pre_step[agent_id] = snake_body[0]
-            body_coords_pre_step[agent_id] = snake_body # Save the whole body
+            body_coords_pre_step[agent_id] = snake_body 
             lengths_pre_step[agent_id] = int(pre_step_state.snake_len[i])
 
-        # ---------------------------------------------------------
-        # EXECUTE STEP
-        # ---------------------------------------------------------
         actions = []
         penalty_flags = {i: False for i in range(self.num_snakes)}
         opposites = {0: 2, 2: 0, 1: 3, 3: 1}
@@ -146,7 +130,7 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             if self.turn_count > 1:
                 last_act = self.last_actions[i]
                 if action == opposites.get(last_act):
-                    action = last_act  # Keep moving straight instead of dying!
+                    action = last_act  
                     penalty_flags[i] = True
                     
             actions.append(action)
@@ -169,7 +153,7 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             current_state = self.env.get_state()
 
         # ---------------------------------------------------------
-        # REWARD ALLOCATION
+        # THE ELITE REWARD ALLOCATION
         # ---------------------------------------------------------
         for i in range(self.num_snakes):
             agent_id = f"snake_{i}"
@@ -192,41 +176,46 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
 
             raw = float(raw_rewards[alive_ids.index(i)]) if i in alive_ids else 0.0
             
-            # 1. FIX C: REDUCED DEATH PENALTY (Tiered based on placement)
             if is_dead or raw < 0:
-                # Halved from -10.0 to encourage risky plays!
-                if alive_count_start >= 4: base_penalty = -5.0
-                elif alive_count_start == 3: base_penalty = -3.0
-                elif alive_count_start == 2: base_penalty = -1.0
-                else: base_penalty = -5.0
-                
-                # Still reward them for dying massive instead of dying small
-                length_bonus = self.previous_lengths.get(agent_id, 3) * 0.5
-                rewards[agent_id] = min(base_penalty + length_bonus, -0.5) 
+                # 1. BRUTAL DEATH PENALTY
+                # No more softening. Make them terrified of hitting bodies.
+                rewards[agent_id] = -15.0 
                 
             elif game_over:
                 rewards[agent_id] = 15.0 
             else:
                 # 2. BASE STEP PENALTIES
                 step_reward = -2.0 if penalty_flags[i] else 0.0
+                
+                # 3. SPATIAL CONTROL (Anti Wall-Hugging)
+                my_head = head_coords_pre_step.get(agent_id)
+                if my_head:
+                    hx, hy = my_head[0], my_head[1]
+                    # Bleed points for touching the literal edge of the map
+                    if hx <= 0 or hx >= 14 or hy <= 0 or hy >= 14:
+                        step_reward -= 0.05
+                    # Small drip reward for commanding the center
+                    elif 5 <= hx <= 9 and 5 <= hy <= 9:
+                        step_reward += 0.02
+                        
                 rewards[agent_id] = step_reward
                 
-                # 3. EXACT FOOD REWARD & STARVATION TRACKING
+                # 4. FOOD REWARD & HUNGER PANIC
                 current_true_length = int(current_state.snake_len[i])
                 current_true_health = int(current_state.snake_health[i])
                 
-                # If they grew, give them points
+                # Irresistible food incentive
                 if current_true_length > self.previous_lengths.get(agent_id, 3):
-                    rewards[agent_id] += 3.0
+                    rewards[agent_id] += 5.0
                     self.previous_lengths[agent_id] = current_true_length
                 
-                if current_true_health < 30:
+                # Severe panic when health drops below 40
+                if current_true_health < 40:
                     rewards[agent_id] -= 0.05
                     
-                # 4. FIX A: EXACT H2H KILL AND TRAPPING VERIFICATION
+                # 5. KILL AND TRAPPING VERIFICATION
                 for dead_id in died_this_turn:
                     if dead_id != agent_id:
-                        my_head = head_coords_pre_step.get(agent_id)
                         my_body = body_coords_pre_step.get(agent_id, [])
                         dead_head = head_coords_pre_step.get(dead_id)
                         
@@ -236,16 +225,13 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                             
                             head_dist = abs(my_head[0] - dead_head[0]) + abs(my_head[1] - dead_head[1])
                             
-                            # 4a. EXACT KILL RULE: Heads collided and we were strictly longer
                             if head_dist <= 2 and my_len > dead_len:
                                 rewards[agent_id] += 5.0
                             else:
-                                # 4b. TRAP / CUT-OFF RULE: Did they die adjacent to my body?
-                                # We skip my_body[0] because that's our head (handled above)
                                 is_trap = False
                                 for segment in my_body[1:]:
                                     body_dist = abs(segment[0] - dead_head[0]) + abs(segment[1] - dead_head[1])
-                                    if body_dist <= 1: # They crashed right into our side!
+                                    if body_dist <= 1: 
                                         is_trap = True
                                         break
                                 
