@@ -14,7 +14,6 @@ RUN useradd -m snake
 USER snake
 
 CMD ["python", "main.py"]
-
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8000/ || exit 1

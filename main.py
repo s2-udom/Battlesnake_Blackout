@@ -1,6 +1,6 @@
 from battlesnake_server import start_server
-from hungry_agent import HungryAgent
+from torch_agent import TorchAgent
 
 if __name__ == "__main__":
-    agent = HungryAgent()
+    agent = TorchAgent()
     start_server(agent=agent, port=8000)
