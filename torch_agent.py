@@ -14,7 +14,6 @@ Architecture (reconstructed from weight shapes):
 """
 
 import os
-import pickle
 import random
 import traceback
 import numpy as np
@@ -154,27 +153,29 @@ class TorchAgent(BaseAgent):
     }
 
     def __init__(self):
-        checkpoint_path = os.path.join(
+        cweights_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "battlesnake_checkpoint",
-            "policies",
-            "shared_policy",
-            "policy_state.pkl",
+            "weights.pt",
         )
+        if not os.path.exists(weights_path):
+            raise FileNotFoundError(f"weights.pt not found at {weights_path}")
 
-        if not os.path.exists(checkpoint_path):
-            raise FileNotFoundError(f"Policy checkpoint not found at {checkpoint_path}")
-
-        print(f"Loading policy weights from {checkpoint_path} ...")
-        with open(checkpoint_path, "rb") as f:
-            policy_state = pickle.load(f)
+        weights_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "battlesnake_checkpoint",
+            "weights.pt",
+        )
+        print(f"Loading weights from {weights_path} ...")
+        weights = torch.load(weights_path, map_location="cpu", weights_only=True)
 
         self.net = BattlesnakeNet()
-        load_weights(self.net, policy_state["weights"])
+        load_weights(self.net, weights)
         self.net.eval()
         print("TorchAgent ready — Ray-free inference active.")
 
-        # Per-game LSTM state: keyed by game_id
+        # Per-game LSTM state: keyed by game_idcheckpoint_path
+
         self._lstm_states: dict = {}
 
     def _fresh_lstm_state(self):
