@@ -9,73 +9,107 @@ from battlesnake_types import GameState, MoveAction, Direction, BaseAgent
 
 
 class CNNStack(nn.Module):
+    """Single CNN branch: 3 conv layers + adaptive avg pool to 2x2."""
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(22, 16, kernel_size=5, padding=2)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=5, padding=2)
         self.conv3 = nn.Conv2d(32, 64, kernel_size=5, padding=2)
-        self.relu = nn.ReLU()
+        self.relu  = nn.ReLU()
+        self.pool  = nn.AdaptiveAvgPool2d((2, 2))
 
     def forward(self, x):
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         x = self.relu(self.conv3(x))
-        return x
+        x = self.pool(x)
+        return x.flatten(1)  # (batch, 256)
 
 
 class BattlesnakeNet(nn.Module):
+    """
+    Reconstructed RLLib ComplexInputNetwork + LSTM.
+
+    8 CNN branches (4 _convs + 4 _value_branch_separate), each outputting
+    256 features after AdaptiveAvgPool2d(2,2). Concatenated to 2048, fed
+    into LSTM(2048->256), then action head Linear(256->4).
+    """
     def __init__(self):
         super().__init__()
-        self.cnns_0 = CNNStack()
-        self.cnns_1 = CNNStack()
-        self.cnn_0  = CNNStack()
-        self.cnn_1  = CNNStack()
-        self.cnn_proj = nn.Linear(64 * 21 * 21, 512)
-        self.lstm = nn.LSTM(input_size=2048, hidden_size=256, batch_first=True)
+        # Policy branches (_convs)
+        self.cnns_0_convs = CNNStack()
+        self.cnns_1_convs = CNNStack()
+        self.cnn_0_convs  = CNNStack()
+        self.cnn_1_convs  = CNNStack()
+        # Value branches (_value_branch_separate)
+        self.cnns_0_vbs   = CNNStack()
+        self.cnns_1_vbs   = CNNStack()
+        self.cnn_0_vbs    = CNNStack()
+        self.cnn_1_vbs    = CNNStack()
+
+        self.lstm        = nn.LSTM(input_size=2048, hidden_size=256, batch_first=True)
         self.action_head = nn.Linear(256, 4)
 
     def forward(self, x, lstm_state):
-        o0 = self.cnns_0(x).flatten(1)
-        o1 = self.cnns_1(x).flatten(1)
-        o2 = self.cnn_0(x).flatten(1)
-        o3 = self.cnn_1(x).flatten(1)
-        p0 = torch.relu(self.cnn_proj(o0))
-        p1 = torch.relu(self.cnn_proj(o1))
-        p2 = torch.relu(self.cnn_proj(o2))
-        p3 = torch.relu(self.cnn_proj(o3))
-        combined = torch.cat([p0, p1, p2, p3], dim=1)
-        lstm_in = combined.unsqueeze(1)
+        # 8 branches -> each (1, 256)
+        branches = [
+            self.cnns_0_convs(x),
+            self.cnns_1_convs(x),
+            self.cnn_0_convs(x),
+            self.cnn_1_convs(x),
+            self.cnns_0_vbs(x),
+            self.cnns_1_vbs(x),
+            self.cnn_0_vbs(x),
+            self.cnn_1_vbs(x),
+        ]
+        combined = torch.cat(branches, dim=1)  # (1, 2048)
+        lstm_in  = combined.unsqueeze(1)        # (1, 1, 2048)
         lstm_out, new_state = self.lstm(lstm_in, lstm_state)
-        hidden = lstm_out.squeeze(1)
-        logits = self.action_head(hidden)
+        hidden  = lstm_out.squeeze(1)           # (1, 256)
+        logits  = self.action_head(hidden)      # (1, 4)
         return logits, new_state
 
 
 def load_weights(net, weights):
     def w(key):
-        return torch.tensor(weights[key]) if not isinstance(weights[key], torch.Tensor) else weights[key]
+        v = weights[key]
+        return v if isinstance(v, torch.Tensor) else torch.tensor(v)
 
-    for net_stack, prefix in [
-        (net.cnns_0, "cnns.0"),
-        (net.cnns_1, "cnns.1"),
-        (net.cnn_0,  "cnn_0"),
-        (net.cnn_1,  "cnn_1"),
+    # Policy branches
+    for stack, prefix in [
+        (net.cnns_0_convs, "cnns.0"),
+        (net.cnns_1_convs, "cnns.1"),
+        (net.cnn_0_convs,  "cnn_0"),
+        (net.cnn_1_convs,  "cnn_1"),
     ]:
-        net_stack.conv1.weight.data = w(f"{prefix}._convs.0._model.1.weight")
-        net_stack.conv1.bias.data   = w(f"{prefix}._convs.0._model.1.bias")
-        net_stack.conv2.weight.data = w(f"{prefix}._convs.1._model.1.weight")
-        net_stack.conv2.bias.data   = w(f"{prefix}._convs.1._model.1.bias")
-        net_stack.conv3.weight.data = w(f"{prefix}._convs.2._model.0.weight")
-        net_stack.conv3.bias.data   = w(f"{prefix}._convs.2._model.0.bias")
+        stack.conv1.weight.data = w(f"{prefix}._convs.0._model.1.weight")
+        stack.conv1.bias.data   = w(f"{prefix}._convs.0._model.1.bias")
+        stack.conv2.weight.data = w(f"{prefix}._convs.1._model.1.weight")
+        stack.conv2.bias.data   = w(f"{prefix}._convs.1._model.1.bias")
+        stack.conv3.weight.data = w(f"{prefix}._convs.2._model.0.weight")
+        stack.conv3.bias.data   = w(f"{prefix}._convs.2._model.0.bias")
 
-    net.cnn_proj.weight.data   = w("cnn_proj.weight")
-    net.cnn_proj.bias.data     = w("cnn_proj.bias")
+    # Value branches (_value_branch_separate, first 3 conv layers only)
+    for stack, prefix in [
+        (net.cnns_0_vbs, "cnns.0"),
+        (net.cnns_1_vbs, "cnns.1"),
+        (net.cnn_0_vbs,  "cnn_0"),
+        (net.cnn_1_vbs,  "cnn_1"),
+    ]:
+        stack.conv1.weight.data = w(f"{prefix}._value_branch_separate.0._model.1.weight")
+        stack.conv1.bias.data   = w(f"{prefix}._value_branch_separate.0._model.1.bias")
+        stack.conv2.weight.data = w(f"{prefix}._value_branch_separate.1._model.1.weight")
+        stack.conv2.bias.data   = w(f"{prefix}._value_branch_separate.1._model.1.bias")
+        stack.conv3.weight.data = w(f"{prefix}._value_branch_separate.2._model.0.weight")
+        stack.conv3.bias.data   = w(f"{prefix}._value_branch_separate.2._model.0.bias")
 
+    # LSTM
     net.lstm.weight_ih_l0.data = w("lstm.weight_ih_l0")
     net.lstm.weight_hh_l0.data = w("lstm.weight_hh_l0")
     net.lstm.bias_ih_l0.data   = w("lstm.bias_ih_l0")
     net.lstm.bias_hh_l0.data   = w("lstm.bias_hh_l0")
 
+    # Action head
     net.action_head.weight.data = w("_logits_branch._model.0.weight")
     net.action_head.bias.data   = w("_logits_branch._model.0.bias")
 
@@ -145,7 +179,7 @@ class TorchAgent(BaseAgent):
                 if pt and 0 <= pt.x < 21 and 0 <= pt.y < 21:
                     grid[min(7 + idx, 10), pt.y, pt.x] = 1.0
 
-        return torch.tensor(grid).unsqueeze(0)
+        return torch.tensor(grid).unsqueeze(0)  # (1, 22, 21, 21)
 
     def _safe_moves(self, game_state: GameState):
         head   = game_state.you.head
@@ -180,7 +214,7 @@ class TorchAgent(BaseAgent):
             chosen     = self.ACTION_MAP.get(action_idx, Direction.UP)
 
         except Exception as e:
-            print(f"Inference error - falling back to random safe move: {e}")
+            print(f"Inference error - falling back: {e}")
             traceback.print_exc()
 
         safe = self._safe_moves(game_state)
