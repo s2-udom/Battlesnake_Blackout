@@ -68,10 +68,14 @@ def load_weights(net, weights):
         net_stack.conv3.weight.data = w(f"{prefix}._convs.2._model.0.weight")
         net_stack.conv3.bias.data   = w(f"{prefix}._convs.2._model.0.bias")
 
+    net.cnn_proj.weight.data   = w("cnn_proj.weight")
+    net.cnn_proj.bias.data     = w("cnn_proj.bias")
+
     net.lstm.weight_ih_l0.data = w("lstm.weight_ih_l0")
     net.lstm.weight_hh_l0.data = w("lstm.weight_hh_l0")
     net.lstm.bias_ih_l0.data   = w("lstm.bias_ih_l0")
     net.lstm.bias_hh_l0.data   = w("lstm.bias_hh_l0")
+
     net.action_head.weight.data = w("_logits_branch._model.0.weight")
     net.action_head.bias.data   = w("_logits_branch._model.0.bias")
 
