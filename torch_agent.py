@@ -40,7 +40,6 @@ class CNNStack(nn.Module):
         x = self.relu(self.conv3(x))
         return x
 
-nano torch_agent.py
 class BattlesnakeNet(nn.Module):
     """
     Full network matching the RLLib checkpoint architecture.
