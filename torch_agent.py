@@ -40,7 +40,7 @@ class CNNStack(nn.Module):
         x = self.relu(self.conv3(x))
         return x
 
-
+nano torch_agent.py
 class BattlesnakeNet(nn.Module):
     """
     Full network matching the RLLib checkpoint architecture.
@@ -153,7 +153,7 @@ class TorchAgent(BaseAgent):
     }
 
     def __init__(self):
-        cweights_path = os.path.join(
+        weights_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "battlesnake_checkpoint",
             "weights.pt",
@@ -161,22 +161,17 @@ class TorchAgent(BaseAgent):
         if not os.path.exists(weights_path):
             raise FileNotFoundError(f"weights.pt not found at {weights_path}")
 
-        weights_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "battlesnake_checkpoint",
-            "weights.pt",
-        )
         print(f"Loading weights from {weights_path} ...")
         weights = torch.load(weights_path, map_location="cpu", weights_only=True)
 
         self.net = BattlesnakeNet()
         load_weights(self.net, weights)
         self.net.eval()
-        print("TorchAgent ready — Ray-free inference active.")
+        print("TorchAgent ready - Ray-free inference active.")
 
-        # Per-game LSTM state: keyed by game_idcheckpoint_path
-
+        # Per-game LSTM state: keyed by game_id
         self._lstm_states: dict = {}
+
 
     def _fresh_lstm_state(self):
         """Returns zeroed LSTM (h, c) state."""
@@ -191,7 +186,24 @@ class TorchAgent(BaseAgent):
 
     def start(self, game_state: GameState):
         self._lstm_states[game_state.game.id] = self._fresh_lstm_state()
+def __init__(self):
+        weights_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "battlesnake_checkpoint",
+            "weights.pt",
+        )
+        if not os.path.exists(weights_path):
+            raise FileNotFoundError(f"weights.pt not found at {weights_path}")
 
+        print(f"Loading weights from {weights_path} ...")
+        weights = torch.load(weights_path, map_location="cpu", weights_only=True)
+        self.net = BattlesnakeNet()
+        load_weights(self.net, weights)
+        self.net.eval()
+        print("TorchAgent ready — Ray-free inference active.")
+
+        # Per-game LSTM state: keyed by game_id
+        self._lstm_states: dict = {}
     def end(self, game_state: GameState):
         self._lstm_states.pop(game_state.game.id, None)
 
