@@ -17,9 +17,12 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             self.game_config.w = 15
             self.game_config.h = 15
             
-            # Return to official tournament food settings!
+            # Return to official tournament food settings
             self.game_config.food_spawn_chance = 15  
             self.game_config.min_food = 1           
+            
+            # NOTE: We do NOT use the hisss native view_radius here due to library wrapper bugs.
+            # We will apply a perfect mathematical mask in Python instead.
         except Exception: pass
             
         self.env = hisss.BattleSnakeGame(self.game_config)
@@ -50,9 +53,6 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         obs_dict, _, _ = self.env.get_obs()
         alive_ids = self.env.players_alive()
         
-        # Grab the C++ state so we can find exactly where every snake's head is
-        current_state = self.env.get_state()
-        
         unpacked = {}
         for i in range(self.num_snakes):
             agent_id = f"snake_{i}"
@@ -62,21 +62,23 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 raw_actor_obs = obs_dict["actor_obs"][idx]
                 raw_critic_obs = obs_dict["critic_obs"][idx]
                 
-                # --- APPLY 5-SQUARE BLACKOUT ---
-                head_x, head_y = current_state.snake_pos[i][0]
-                
-                tensor_x = head_x + 7
-                tensor_y = head_y + 7
+                # --- THE PERFECT EGO-CENTRIC PYTHON MASK ---
+                # Because the tensor is ego-centric, the snake's head is 
+                # permanently fixed at the absolute center of the matrix
+                tensor_x, tensor_y = 14, 14
                 
                 masked_actor_obs = np.zeros_like(raw_actor_obs)
                 
                 view_radius = 5
+                
+                # This perfectly slices a static 11x11 window
                 min_x = max(0, tensor_x - view_radius)
                 max_x = min(29, tensor_x + view_radius + 1)
                 
                 min_y = max(0, tensor_y - view_radius)
                 max_y = min(29, tensor_y + view_radius + 1)
                 
+                # Apply the window to let the snake see, leaving the rest of the board completely black
                 masked_actor_obs[min_x:max_x, min_y:max_y, :] = raw_actor_obs[min_x:max_x, min_y:max_y, :]
                 
                 unpacked[agent_id] = {
@@ -106,7 +108,6 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         self.turn_count += 1
         
         alive_ids = self.env.players_alive()
-        
         pre_step_state = self.env.get_state()
         
         head_coords_pre_step = {}
@@ -153,7 +154,7 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             current_state = self.env.get_state()
 
         # ---------------------------------------------------------
-        # THE ELITE REWARD ALLOCATION
+        # THE ELITE REWARD ALLOCATION (Tiered Hunter Update)
         # ---------------------------------------------------------
         for i in range(self.num_snakes):
             agent_id = f"snake_{i}"
@@ -175,57 +176,68 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             infos[agent_id] = {}
 
             raw = float(raw_rewards[alive_ids.index(i)]) if i in alive_ids else 0.0
+            my_length = lengths_pre_step.get(agent_id, 3)
             
             if is_dead or raw < 0:
-                # 1. BRUTAL DEATH PENALTY
-                # No more softening. Make them terrified of hitting bodies.
-                rewards[agent_id] = -15.0 
+                players_alive_at_start = len(alive_ids)
+                
+                if players_alive_at_start >= 4:
+                    base_death = -15.0  
+                elif players_alive_at_start == 3:
+                    base_death = -10.0  
+                elif players_alive_at_start == 2:
+                    base_death = -3.0   
+                else:
+                    base_death = 0.0
+                    
+                length_bonus = my_length * 1.0 
+                rewards[agent_id] = min(0.0, base_death + length_bonus) 
                 
             elif game_over:
                 rewards[agent_id] = 15.0 
             else:
-                # 2. BASE STEP PENALTIES
                 step_reward = -2.0 if penalty_flags[i] else 0.0
                 
-                # 3. SPATIAL CONTROL (Anti Wall-Hugging)
                 my_head = head_coords_pre_step.get(agent_id)
                 if my_head:
                     hx, hy = my_head[0], my_head[1]
-                    # Bleed points for touching the literal edge of the map
-                    if hx <= 0 or hx >= 14 or hy <= 0 or hy >= 14:
-                        step_reward -= 0.05
-                    # Small drip reward for commanding the center
-                    elif 5 <= hx <= 9 and 5 <= hy <= 9:
-                        step_reward += 0.02
+                    
+                    if hx <= 1 or hx >= 13 or hy <= 1 or hy >= 13:
+                        step_reward -= 0.1
+                    elif 4 <= hx <= 10 and 4 <= hy <= 10:
+                        step_reward += 0.05
+                        
+                    for other_id in alive_ids:
+                        if other_id != i:
+                            enemy_body = pre_step_state.snake_pos[other_id]
+                            for segment in enemy_body[1:]:
+                                dist_to_segment = abs(hx - segment[0]) + abs(hy - segment[1])
+                                if dist_to_segment == 1:
+                                    step_reward -= 0.15 
                         
                 rewards[agent_id] = step_reward
                 
-                # 4. FOOD REWARD & HUNGER PANIC
                 current_true_length = int(current_state.snake_len[i])
                 current_true_health = int(current_state.snake_health[i])
                 
-                # Irresistible food incentive
                 if current_true_length > self.previous_lengths.get(agent_id, 3):
                     rewards[agent_id] += 5.0
                     self.previous_lengths[agent_id] = current_true_length
                 
-                # Severe panic when health drops below 40
-                if current_true_health < 40:
-                    rewards[agent_id] -= 0.05
+                if current_true_health < 50:
+                    panic_factor = (50 - current_true_health) * 0.02
+                    rewards[agent_id] -= panic_factor
                     
-                # 5. KILL AND TRAPPING VERIFICATION
                 for dead_id in died_this_turn:
                     if dead_id != agent_id:
                         my_body = body_coords_pre_step.get(agent_id, [])
                         dead_head = head_coords_pre_step.get(dead_id)
                         
                         if my_head and dead_head and my_body:
-                            my_len = lengths_pre_step.get(agent_id, 0)
-                            dead_len = lengths_pre_step.get(dead_id, 0)
-                            
+                            dead_len = lengths_pre_step.get(dead_id, 3)
                             head_dist = abs(my_head[0] - dead_head[0]) + abs(my_head[1] - dead_head[1])
                             
-                            if head_dist <= 2 and my_len > dead_len:
+                            if head_dist <= 2 and my_length > dead_len:
                                 rewards[agent_id] += 5.0
                             else:
                                 is_trap = False

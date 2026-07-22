@@ -33,9 +33,23 @@ def env_creator(env_config):
 def setup_rllib():
     global algo, dummy_env
     
-    checkpoint_dir = os.path.abspath("./battlesnake_checkpoint")
-    if not os.path.exists(checkpoint_dir):
-        raise ValueError(f"Checkpoint not found at {checkpoint_dir}! Please check the path.")
+    base_dir = os.path.abspath("./battlesnake_checkpoint")
+    if not os.path.exists(base_dir):
+        raise ValueError(f"Checkpoint folder not found at {base_dir}! Please check the path.")
+
+    # --- AUTO-DISCOVER LATEST CHECKPOINT ---
+    valid_checkpoints = []
+    for root, dirs, files in os.walk(base_dir):
+        # Look for the exact file Ray is complaining about missing
+        if any(f.startswith("algorithm_state") for f in files):
+            valid_checkpoints.append(root)
+
+    if not valid_checkpoints:
+        raise ValueError(f"No valid RLlib model state found anywhere inside {base_dir}!")
+
+    # Grab the newest checkpoint sub-folder by modification time
+    checkpoint_dir = max(valid_checkpoints, key=os.path.getmtime)
+    print(f"--- Auto-detected latest checkpoint at: {checkpoint_dir} ---")
 
     print("--- Initializing Ray and Loading Model ---")
     ray.init(ignore_reinit_error=True)
@@ -71,7 +85,7 @@ def setup_rllib():
     )
     
     algo = config.build_algo()
-    algo.restore(checkpoint_dir)
+    algo.restore(checkpoint_dir) # Now passing the exact sub-folder!
     print("--- Neural Network Loaded Securely! ---")
 
 
