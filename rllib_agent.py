@@ -6,18 +6,26 @@ from battlesnake_types import GameState, MoveAction, Direction, BaseAgent
 
 class RLLibAgent(BaseAgent):
     def __init__(self):
-        self.checkpoint_dir = os.path.abspath("./battlesnake_checkpoint")
-        if not os.path.exists(self.checkpoint_dir):
-            raise ValueError(f"No checkpoint found at {self.checkpoint_dir}!")
+        base_dir = os.path.abspath("./battlesnake_checkpoint")
+        if not os.path.exists(base_dir):
+            raise ValueError(f"No checkpoint base folder found at {base_dir}!")
 
-        # 1. Target the specific policy folder inside the checkpoint
-        policy_path = os.path.join(self.checkpoint_dir, "policies", "shared_policy")
+        # 1. AUTO-DISCOVER LATEST CHECKPOINT ITERATION
+        valid_checkpoints = []
+        for root, dirs, files in os.walk(base_dir):
+            if any(f.startswith("algorithm_state") for f in files):
+                valid_checkpoints.append(root)
+
+        if not valid_checkpoints:
+            raise ValueError(f"No valid RLlib model state found anywhere inside {base_dir}!")
+
+        # Grab the newest iteration folder (e.g., iter_010005)
+        latest_checkpoint_dir = max(valid_checkpoints, key=os.path.getmtime)
         
-        # Fallback just in case your checkpoint structure is flat
-        if not os.path.exists(policy_path):
-            policy_path = self.checkpoint_dir
-
-        print(f"Loading raw PyTorch weights from: {policy_path}...")
+        # Target the specific policy folder INSIDE the iteration folder
+        policy_path = os.path.join(latest_checkpoint_dir, "policies", "shared_policy")
+        
+        print(f"--- Auto-detected latest policy at: {policy_path} ---")
 
         # 2. The Lightweight Load: Skips ray.init(), workers, and environments!
         self.policy = Policy.from_checkpoint(policy_path)
@@ -25,7 +33,7 @@ class RLLibAgent(BaseAgent):
         # 3. Memory & Action Map Sync
         self.active_games_memory = {}
         
-        # FIXED: Action map now perfectly mirrors train_mappo.py
+        # Action map mirroring train_mappo.py
         self.action_map = {
             0: Direction.UP,
             1: Direction.RIGHT,
@@ -88,7 +96,6 @@ class RLLibAgent(BaseAgent):
 
     def _manual_encode(self, game_state: GameState) -> dict:
         """Translates the GameState object into the (29, 29, 22) Dict expected by CTDE."""
-        # FIXED: Use float32 to match Ray's internal normalized environment buffers
         grid = np.zeros((29, 29, 22), dtype=np.float32)
         my_head = game_state.you.head
         
@@ -96,7 +103,6 @@ class RLLibAgent(BaseAgent):
         shift_x = 14 - my_head.x
         shift_y = 14 - my_head.y
         
-        # FIXED: Default value is 1.0, not 255
         def set_obs(x, y, channel, val=1.0):
             nx = x + shift_x
             ny = y + shift_y
