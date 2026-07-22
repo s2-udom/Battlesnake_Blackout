@@ -179,7 +179,7 @@ class TorchAgent(BaseAgent):
                 if pt and 0 <= pt.x < 21 and 0 <= pt.y < 21:
                     grid[min(7 + idx, 10), pt.y, pt.x] = 1.0
 
-        return torch.tensor(grid).unsqueeze(0)  # (1, 22, 21, 21)
+        return torch.tensor(grid).unsqueeze(0)  # (1, 22, 21, 21) ...
 
     def _safe_moves(self, game_state: GameState):
         head   = game_state.you.head
