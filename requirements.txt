@@ -13,4 +13,5 @@ typing-inspection==0.4.2
 werkzeug==3.1.7
 pytest
 requests
-torch
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.0+cpu
