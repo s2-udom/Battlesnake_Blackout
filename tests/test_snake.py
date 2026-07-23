@@ -2,7 +2,7 @@ import json
 import pytest
 from flask import Flask
 from unittest.mock import patch
-from torch_agent import TorchAgent
+from rllib_agent import TorchAgent
 from battlesnake_server import start_server
 
 def make_app():
