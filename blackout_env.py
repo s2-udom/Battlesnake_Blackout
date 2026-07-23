@@ -21,8 +21,6 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             self.game_config.food_spawn_chance = 15  
             self.game_config.min_food = 1           
             
-            # NOTE: We do NOT use the hisss native view_radius here due to library wrapper bugs.
-            # We will apply a perfect mathematical mask in Python instead.
         except Exception: pass
             
         self.env = hisss.BattleSnakeGame(self.game_config)
@@ -32,10 +30,9 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         self._agent_ids = set(self.agent_ids)
         
         single_action_space = gym.spaces.Discrete(4)
-        single_agent_obs_space = gym.spaces.Dict({
-            "obs": gym.spaces.Box(low=0, high=255, shape=(29, 29, 22), dtype=np.uint8),
-            "state": gym.spaces.Box(low=0, high=255, shape=(29, 29, 22), dtype=np.uint8)
-        })
+        
+        # PURE 11x11 BOX: No more dictionaries!
+        single_agent_obs_space = gym.spaces.Box(low=0, high=255, shape=(11, 11, 22), dtype=np.uint8)
         
         self.action_space = gym.spaces.Dict({
             agent_id: single_action_space for agent_id in self.agent_ids
@@ -59,37 +56,48 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             
             if i in alive_ids:
                 idx = alive_ids.index(i)
-                raw_actor_obs = obs_dict["actor_obs"][idx]
-                raw_critic_obs = obs_dict["critic_obs"][idx]
+                raw_actor_obs = obs_dict["actor_obs"][idx].copy() # Copy to avoid mutating shared state
                 
-                # --- THE PERFECT EGO-CENTRIC PYTHON MASK ---
-                # Because the tensor is ego-centric, the snake's head is 
-                # permanently fixed at the absolute center of the matrix
-                tensor_x, tensor_y = 14, 14
+                # --- THE FIX: PAINT THE WALLS IN TRAINING ---
+                # Find all tiles where "Valid Board" (Channel 1) is 0.0, and mark them as Hazards (Ch 2)
+                # and Enemy Bodies (Ch 13)
+                out_of_bounds = raw_actor_obs[:, :, 1] == 0
+                raw_actor_obs[out_of_bounds, 2] = 255  # Hazard
+                raw_actor_obs[out_of_bounds, 13] = 255 # Enemy Body
+                # --------------------------------------------
+
+                # 1. FIND THE HEAD: Scan Channel 6 to find exactly where hisss put the head
+                head_locs = np.argwhere(raw_actor_obs[:, :, 6] > 0)
+                if len(head_locs) > 0:
+                    tx, ty = head_locs[0]
+                else:
+                    tx, ty = 14, 14 # Fallback
                 
-                masked_actor_obs = np.zeros_like(raw_actor_obs)
+                # 2. THE EGO-SHIFT: Calculate how far we must move the board to center the head
+                shift_x = 14 - tx
+                shift_y = 14 - ty
                 
-                view_radius = 5
+                ego_actor_obs = np.zeros_like(raw_actor_obs)
                 
-                # This perfectly slices a static 11x11 window
-                min_x = max(0, tensor_x - view_radius)
-                max_x = min(29, tensor_x + view_radius + 1)
+                # Safely copy the board to the new shifted coordinates (preventing wraparound)
+                src_x_min = max(0, -shift_x)
+                src_x_max = min(29, 29 - shift_x)
+                src_y_min = max(0, -shift_y)
+                src_y_max = min(29, 29 - shift_y)
                 
-                min_y = max(0, tensor_y - view_radius)
-                max_y = min(29, tensor_y + view_radius + 1)
+                dst_x_min = max(0, shift_x)
+                dst_x_max = min(29, 29 + shift_x)
+                dst_y_min = max(0, shift_y)
+                dst_y_max = min(29, 29 + shift_y)
                 
-                # Apply the window to let the snake see, leaving the rest of the board completely black
-                masked_actor_obs[min_x:max_x, min_y:max_y, :] = raw_actor_obs[min_x:max_x, min_y:max_y, :]
+                ego_actor_obs[dst_x_min:dst_x_max, dst_y_min:dst_y_max, :] = \
+                    raw_actor_obs[src_x_min:src_x_max, src_y_min:src_y_max, :]
                 
-                unpacked[agent_id] = {
-                    "obs": masked_actor_obs,
-                    "state": raw_critic_obs
-                }
+                # 3. APPLY THE FOG AND CROP: Slice out the 11x11 window and return it directly
+                cropped_ego_obs = ego_actor_obs[9:20, 9:20, :]
+                unpacked[agent_id] = cropped_ego_obs
             else:
-                unpacked[agent_id] = {
-                    "obs": np.zeros((29, 29, 22), dtype=np.uint8), 
-                    "state": np.zeros((29, 29, 22), dtype=np.uint8)
-                }
+                unpacked[agent_id] = np.zeros((11, 11, 22), dtype=np.uint8)
                 
         return unpacked
 
@@ -163,10 +171,7 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 continue
 
             if game_over:
-                obs[agent_id] = {
-                    "obs": np.zeros((29, 29, 22), dtype=np.uint8), 
-                    "state": np.zeros((29, 29, 22), dtype=np.uint8)
-                }
+                obs[agent_id] = np.zeros((11, 11, 22), dtype=np.uint8)
             else:
                 obs[agent_id] = obs_unpacked[agent_id]
 
@@ -190,8 +195,7 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 else:
                     base_death = 0.0
                     
-                length_bonus = my_length * 1.0 
-                rewards[agent_id] = min(0.0, base_death + length_bonus) 
+                rewards[agent_id] = min(0.0, base_death) 
                 
             elif game_over:
                 rewards[agent_id] = 15.0 
@@ -221,7 +225,7 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 current_true_health = int(current_state.snake_health[i])
                 
                 if current_true_length > self.previous_lengths.get(agent_id, 3):
-                    rewards[agent_id] += 5.0
+                    rewards[agent_id] += 3.0
                     self.previous_lengths[agent_id] = current_true_length
                 
                 if current_true_health < 50:
