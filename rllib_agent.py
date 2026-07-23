@@ -135,7 +135,7 @@ class TorchAgent(BaseAgent):
 
     def get_name(self):   return "MAPPO Predator"
     def get_color(self):  return "#16D067"
-    def get_author(self): return "Gluttony"
+    def get_author(self): return "Wrath"
 
     def start(self, game_state: GameState):
         key = f"{game_state.game.id}_{game_state.you.id}"
