@@ -20,6 +20,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Build C++ extensions
