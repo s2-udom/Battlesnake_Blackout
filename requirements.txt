@@ -17,4 +17,4 @@ pytest
 requests
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.3.0+cpu
-git+https://github.com/ymahlau/hisss.git
+hisss
