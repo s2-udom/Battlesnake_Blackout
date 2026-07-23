@@ -22,6 +22,10 @@ jobs:
           cache: "pip"
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Build C++ extensions
+        run: |
+          # If you have a setup.py or build script for the C++ extension:
+          if [ -f "setup.py" ]; then python setup.py build_ext --inplace; fi
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
