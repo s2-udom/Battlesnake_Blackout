@@ -45,47 +45,51 @@ class BattlesnakeBlackoutEnv:
         self.previous_lengths = {}
 
     def _get_unpacked_obs(self):
-        obs_dict, _, _ = self.env.get_obs()
-        alive_ids = list(self.env.players_alive())
+        obs_data = self.env.get_obs()
         
-        actor_obs_data = obs_dict["actor_obs"]
+        # 1. Handle tuple vs dict return from hisss
+        if isinstance(obs_data, tuple):
+            # Typically (actor_obs, critic_obs, ...) or (actor_obs, info)
+            actor_obs_data = obs_data[0]
+        elif isinstance(obs_data, dict):
+            actor_obs_data = obs_data.get("actor_obs", obs_data)
+        else:
+            actor_obs_data = obs_data
+
+        alive_ids = list(self.env.players_alive())
         
         unpacked = {}
         for i in range(self.num_snakes):
             agent_id = f"snake_{i}"
             
             if i in alive_ids:
-                # Find position in alive_ids and force Python int type
                 idx = int(alive_ids.index(i))
                 
-                # Safely extract raw array based on structure
+                # Access the actor observation safely
                 if isinstance(actor_obs_data, dict):
-                    raw_actor_obs = actor_obs_data.get(idx, actor_obs_data.get(f"snake_{i}")).copy()
+                    raw_actor_obs = actor_obs_data.get(i, actor_obs_data.get(idx)).copy()
                 else:
                     raw_actor_obs = np.asarray(actor_obs_data[idx]).copy()
                 
                 # --- PAINT THE WALLS IN TRAINING ---
-                # Find all tiles where "Valid Board" (Channel 1) is 0.0, and mark them as Hazards (Ch 2)
-                # and Enemy Bodies (Ch 13)
                 out_of_bounds = raw_actor_obs[:, :, 1] == 0
                 raw_actor_obs[out_of_bounds, 2] = 255  # Hazard
                 raw_actor_obs[out_of_bounds, 13] = 255 # Enemy Body
                 # --------------------------------------------
 
-                # 1. FIND THE HEAD: Scan Channel 6 to find exactly where hisss put the head
+                # 1. FIND THE HEAD
                 head_locs = np.argwhere(raw_actor_obs[:, :, 6] > 0)
                 if len(head_locs) > 0:
                     tx, ty = head_locs[0]
                 else:
-                    tx, ty = 14, 14 # Fallback
+                    tx, ty = 14, 14
                 
-                # 2. THE EGO-SHIFT: Calculate how far we must move the board to center the head
+                # 2. THE EGO-SHIFT
                 shift_x = 14 - tx
                 shift_y = 14 - ty
                 
                 ego_actor_obs = np.zeros_like(raw_actor_obs)
                 
-                # Safely copy the board to the new shifted coordinates (preventing wraparound)
                 src_x_min = max(0, -shift_x)
                 src_x_max = min(29, 29 - shift_x)
                 src_y_min = max(0, -shift_y)
@@ -99,14 +103,14 @@ class BattlesnakeBlackoutEnv:
                 ego_actor_obs[dst_x_min:dst_x_max, dst_y_min:dst_y_max, :] = \
                     raw_actor_obs[src_x_min:src_x_max, src_y_min:src_y_max, :]
                 
-                # 3. APPLY THE FOG AND CROP: Slice out the 11x11 window and return it directly
+                # 3. APPLY THE FOG AND CROP
                 cropped_ego_obs = ego_actor_obs[9:20, 9:20, :]
                 unpacked[agent_id] = cropped_ego_obs
             else:
                 unpacked[agent_id] = np.zeros((11, 11, 22), dtype=np.uint8)
                 
         return unpacked
-
+    
     def reset(self, *, seed=None, options=None):
         self.env.reset()
         self.turn_count = 0
