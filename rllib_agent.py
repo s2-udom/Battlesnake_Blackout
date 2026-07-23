@@ -20,8 +20,8 @@ class BattlesnakeNet(nn.Module):
         # 1. Auto-detect the correct dictionary prefix from the PyTorch checkpoint
         self.prefix = ""
         for k in state_dict.keys():
-            if k.endswith("_convs.0._model.1.weight"):
-                self.prefix = k.replace("_convs.0._model.1.weight", "")
+            if "_convs.0._model.1.weight" in k:
+                self.prefix = k.split("_convs.0._model.1.weight")[0]
                 break
                 
         # 2. Reconstruct the precise RLlib Convolutional Math
@@ -40,8 +40,8 @@ class BattlesnakeNet(nn.Module):
         self.linear = nn.Sequential(nn.Linear(64 * 6 * 6, 256), nn.ReLU())
         
         # 3. Reconstruct the LSTM and Action Head
-        # Auto-detect LSTM input size in case RLlib concatenated 'obs' and 'state'
-        self.lstm_in = state_dict["lstm.weight_ih_l0"].shape[1]
+        lstm_key = next((k for k in state_dict.keys() if "lstm.weight_ih_l0" in k), "lstm.weight_ih_l0")
+        self.lstm_in = state_dict[lstm_key].shape[1]
         self.lstm = nn.LSTM(input_size=self.lstm_in, hidden_size=256, batch_first=True)
         self.action_head = nn.Linear(256, 4)
         
@@ -49,30 +49,59 @@ class BattlesnakeNet(nn.Module):
         self._load_weights(state_dict)
 
     def _load_weights(self, state_dict):
-        """Safely maps the RLlib dictionary keys to the native PyTorch layers."""
-        def w(k):
-            val = state_dict[k]
-            return val.clone().detach() if isinstance(val, torch.Tensor) else torch.tensor(val)
+        """Safely maps the RLlib dictionary keys to the native PyTorch layers with fallback search."""
+        
+        def get_key(candidates):
+            """Returns the tensor for the first candidate key found in state_dict."""
+            for candidate in candidates:
+                if candidate in state_dict:
+                    val = state_dict[candidate]
+                    return val.clone().detach() if isinstance(val, torch.Tensor) else torch.tensor(val)
+                # Fuzzy match suffix
+                for k in state_dict.keys():
+                    if k.endswith(candidate):
+                        val = state_dict[k]
+                        return val.clone().detach() if isinstance(val, torch.Tensor) else torch.tensor(val)
             
-        self.conv1[1].weight.data = w(self.prefix + "_convs.0._model.1.weight")
-        self.conv1[1].bias.data   = w(self.prefix + "_convs.0._model.1.bias")
+            # Print available keys if no candidate matched to make debugging easy
+            print("\nAvailable keys in weights.pt:")
+            for k in state_dict.keys():
+                print(f"  - {k}")
+            raise KeyError(f"Could not find any of keys {candidates} in state_dict.")
+
+        # Map Convolutional Layers
+        self.conv1[1].weight.data = get_key([self.prefix + "_convs.0._model.1.weight", "_convs.0._model.1.weight"])
+        self.conv1[1].bias.data   = get_key([self.prefix + "_convs.0._model.1.bias", "_convs.0._model.1.bias"])
         
-        self.conv2[1].weight.data = w(self.prefix + "_convs.1._model.1.weight")
-        self.conv2[1].bias.data   = w(self.prefix + "_convs.1._model.1.bias")
+        self.conv2[1].weight.data = get_key([self.prefix + "_convs.1._model.1.weight", "_convs.1._model.1.bias"])
+        self.conv2[1].bias.data   = get_key([self.prefix + "_convs.1._model.1.bias", "_convs.1._model.1.bias"])
         
-        self.conv3[0].weight.data = w(self.prefix + "_convs.2._model.0.weight")
-        self.conv3[0].bias.data   = w(self.prefix + "_convs.2._model.0.bias")
+        self.conv3[0].weight.data = get_key([self.prefix + "_convs.2._model.0.weight", "_convs.2._model.0.weight"])
+        self.conv3[0].bias.data   = get_key([self.prefix + "_convs.2._model.0.bias", "_convs.2._model.0.bias"])
         
-        self.linear[0].weight.data = w(self.prefix + "_convs.3._model.0.weight")
-        self.linear[0].bias.data   = w(self.prefix + "_convs.3._model.0.bias")
+        # Map Linear Layer (Handles _convs.3, _value_branch, or linear layer variations)
+        self.linear[0].weight.data = get_key([
+            self.prefix + "_convs.3._model.0.weight",
+            self.prefix + "_hidden_layers.0._model.0.weight",
+            "post_fc_stack.0._model.0.weight",
+            "_value_branch._model.0.weight"
+        ])
+        self.linear[0].bias.data = get_key([
+            self.prefix + "_convs.3._model.0.bias",
+            self.prefix + "_hidden_layers.0._model.0.bias",
+            "post_fc_stack.0._model.0.bias",
+            "_value_branch._model.0.bias"
+        ])
         
-        self.lstm.weight_ih_l0.data = w("lstm.weight_ih_l0")
-        self.lstm.weight_hh_l0.data = w("lstm.weight_hh_l0")
-        self.lstm.bias_ih_l0.data   = w("lstm.bias_ih_l0")
-        self.lstm.bias_hh_l0.data   = w("lstm.bias_hh_l0")
+        # Map LSTM
+        self.lstm.weight_ih_l0.data = get_key(["lstm.weight_ih_l0"])
+        self.lstm.weight_hh_l0.data = get_key(["lstm.weight_hh_l0"])
+        self.lstm.bias_ih_l0.data   = get_key(["lstm.bias_ih_l0"])
+        self.lstm.bias_hh_l0.data   = get_key(["lstm.bias_hh_l0"])
         
-        self.action_head.weight.data = w("_logits_branch._model.0.weight")
-        self.action_head.bias.data   = w("_logits_branch._model.0.bias")
+        # Map Action Head
+        self.action_head.weight.data = get_key(["_logits_branch._model.0.weight", "action_branch._model.0.weight"])
+        self.action_head.bias.data   = get_key(["_logits_branch._model.0.bias", "action_branch._model.0.bias"])
 
     def forward(self, x, lstm_state):
         x = self.conv1(x)
