@@ -29,7 +29,7 @@ class BattlesnakeBlackoutEnv:
         
         single_action_space = gym.spaces.Discrete(4)
         
-        # PURE 11x11 BOX: No more dictionaries!
+        # PURE 11x11 BOX
         single_agent_obs_space = gym.spaces.Box(low=0, high=255, shape=(11, 11, 22), dtype=np.uint8)
         
         self.action_space = gym.spaces.Dict({
@@ -46,17 +46,25 @@ class BattlesnakeBlackoutEnv:
 
     def _get_unpacked_obs(self):
         obs_dict, _, _ = self.env.get_obs()
-        alive_ids = self.env.players_alive()
+        alive_ids = list(self.env.players_alive())
+        
+        actor_obs_data = obs_dict["actor_obs"]
         
         unpacked = {}
         for i in range(self.num_snakes):
             agent_id = f"snake_{i}"
             
             if i in alive_ids:
-                idx = alive_ids.index(i)
-                raw_actor_obs = obs_dict["actor_obs"][idx].copy() # Copy to avoid mutating shared state
+                # Find position in alive_ids and force Python int type
+                idx = int(alive_ids.index(i))
                 
-                # --- THE FIX: PAINT THE WALLS IN TRAINING ---
+                # Safely extract raw array based on structure
+                if isinstance(actor_obs_data, dict):
+                    raw_actor_obs = actor_obs_data.get(idx, actor_obs_data.get(f"snake_{i}")).copy()
+                else:
+                    raw_actor_obs = np.asarray(actor_obs_data[idx]).copy()
+                
+                # --- PAINT THE WALLS IN TRAINING ---
                 # Find all tiles where "Valid Board" (Channel 1) is 0.0, and mark them as Hazards (Ch 2)
                 # and Enemy Bodies (Ch 13)
                 out_of_bounds = raw_actor_obs[:, :, 1] == 0
@@ -113,7 +121,7 @@ class BattlesnakeBlackoutEnv:
     def step(self, action_dict):
         self.turn_count += 1
         
-        alive_ids = self.env.players_alive()
+        alive_ids = list(self.env.players_alive())
         pre_step_state = self.env.get_state()
         
         head_coords_pre_step = {}
@@ -148,7 +156,7 @@ class BattlesnakeBlackoutEnv:
         except ValueError:
             raw_rewards, done = [-2.0]*len(alive_ids), True
 
-        current_alive = self.env.players_alive()
+        current_alive = list(self.env.players_alive())
         game_over = bool(done) or len(current_alive) <= 1
         died_this_turn = [f"snake_{snake}" for snake in alive_ids if snake not in current_alive]
 
