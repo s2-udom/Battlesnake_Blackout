@@ -1,11 +1,9 @@
 import gymnasium as gym
 import numpy as np
-from ray.rllib.env.multi_agent_env import MultiAgentEnv
 import hisss
 
-class BattlesnakeBlackoutEnv(MultiAgentEnv):
+class BattlesnakeBlackoutEnv:
     def __init__(self, config=None):
-        super().__init__()
         self.config = config or {}
         
         self.game_config = hisss.standard_config()
