@@ -26,11 +26,7 @@ jobs:
       - name: Install requirements
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          # 1. Install scikit-build-core version < 0.8 along with build helpers
-          pip install "scikit-build-core<0.8" pyproject_metadata cmake ninja
-
-          # 2. Build requirements using pre-installed tooling
-          pip install --no-build-isolation -r requirements.txt
+          PIP_CONFIG_SETTINGS="cmake.minimum-version=warning" pip install -r requirements.txt
       - name: Build C++ extensions
         run: |
           if [ -f "setup.py" ]; then python setup.py build_ext --inplace; fi
