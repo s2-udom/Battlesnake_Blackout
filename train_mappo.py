@@ -77,7 +77,6 @@ if __name__ == "__main__":
             minibatch_size=3072,
             num_epochs=5,
             model={
-                # PERFECT RESOLUTION: Stride 1 across all 11x11 input layers
                 "conv_filters": [[16, [3, 3], 1], [32, [3, 3], 1], [64, [3, 3], 1]],                
                 "fcnet_hiddens": [256, 256],
                 "use_lstm": True,
