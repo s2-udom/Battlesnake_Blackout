@@ -1,11 +1,19 @@
 import gymnasium as gym
 import numpy as np
-from ray.rllib.env.multi_agent_env import MultiAgentEnv
 import hisss
+
+# Safe import: Works with Ray during training, and without Ray on EC2/CI
+try:
+    from ray.rllib.env.multi_agent_env import MultiAgentEnv
+except ModuleNotFoundError:
+    class MultiAgentEnv(gym.Env):
+        """Fallback dummy class when Ray is not installed on lightweight deployment instances."""
+        pass
 
 class BattlesnakeBlackoutEnv(MultiAgentEnv):
     def __init__(self, config=None):
         super().__init__()
+        # ... rest of your environment code remains completely untouched ...
         self.config = config or {}
         
         self.game_config = hisss.standard_config()
@@ -45,8 +53,15 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
         self.diamond_mask = mask_2d[:, :, np.newaxis] # Shape becomes (11, 11, 1)
 
     def _get_unpacked_obs(self):
-        obs_dict, _, _ = self.env.get_obs()
+        # 1. Rename to obs_data since it might not be a dictionary anymore
+        obs_data, _, _ = self.env.get_obs()
         alive_ids = self.env.players_alive()
+        
+        # 2. Add this version-check fallback:
+        if isinstance(obs_data, dict):
+            actor_obs_array = obs_data["actor_obs"]
+        else:
+            actor_obs_array = obs_data 
         
         # Grab state once to look up exact head coordinates from memory
         current_state = self.env.get_state()
@@ -57,11 +72,15 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
             
             if i in alive_ids:
                 idx = alive_ids.index(i)
-                raw_actor_obs = obs_dict["actor_obs"][idx].copy() 
+                
+                # 3. Use the safely extracted array here
+                raw_actor_obs = actor_obs_array[idx].copy() 
                 
                 out_of_bounds = raw_actor_obs[:, :, 1] == 0
                 raw_actor_obs[out_of_bounds, 2] = 255  
                 raw_actor_obs[out_of_bounds, 13] = 255 
+                
+                # ... the rest of your optimization code remains exactly the same ...
 
                 # OPTIMIZATION 2: Instant head lookup (No more np.argwhere scanning!)
                 my_head = current_state.snake_pos[i][0]

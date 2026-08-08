@@ -1,27 +1,16 @@
 import json
 import pytest
-from flask import Flask
-from unittest.mock import patch
-from rllib_agent import TorchAgent
-from battlesnake_server import start_server
 
-def make_app():
-    agent = TorchAgent()
-    apps = []
-    original_run = Flask.run
-    def mock_run(self, *args, **kwargs):
-        apps.append(self)
-    with patch.object(Flask, 'run', mock_run):
-        start_server(agent=agent, port=8000)
-    return apps[0], agent
+# Import the standalone Flask app from your new optimized server script
+from rllib_agent import app
 
 @pytest.fixture(scope="module")
 def client():
-    app, agent = make_app()
     app.config['TESTING'] = True
     with app.test_client() as c:
         yield c
 
+# Standard Battlesnake JSON request for testing
 GAME_STATE = {
     "turn": 5,
     "game": {
@@ -61,14 +50,24 @@ GAME_STATE = {
 }
 
 def test_index(client):
+    """Tests if the root directory returns the snake's appearance."""
     r = client.get('/')
     assert r.status_code == 200
     data = json.loads(r.data)
     assert 'color' in data
+    assert 'head' in data
+    assert 'tail' in data
 
 def test_move_returns_valid_direction(client):
+    """Tests if the neural network and safety shield return a valid move."""
+    # 1. Initialize the LSTM memory state
     client.post('/start', json=GAME_STATE)
+    
+    # 2. Request a move
     r = client.post('/move', json=GAME_STATE)
     assert r.status_code == 200
+    
+    # 3. Verify the move is valid
     data = json.loads(r.data)
+    assert 'move' in data
     assert data['move'] in ['up', 'down', 'left', 'right']

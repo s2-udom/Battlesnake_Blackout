@@ -90,6 +90,12 @@ jobs:
             aws ecr get-login-password --region eu-central-1 \
               | docker login --username AWS --password-stdin \
                 317356818920.dkr.ecr.eu-central-1.amazonaws.com
+            
+            # --- AUTOMATED CLEANUP ---
+            # Frees up disk space by deleting old, unused Docker images
+            docker system prune -a -f
+            # -------------------------
+            
             docker pull $IMAGE
             docker stop battlesnake 2>/dev/null || true
             docker rm battlesnake 2>/dev/null || true
