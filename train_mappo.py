@@ -83,7 +83,7 @@ if __name__ == "__main__":
                 "max_seq_len": 32,                  
                 "lstm_cell_size": 256,      
             },
-            entropy_coeff_schedule=[[0, 0.05], [5_000_000, 0.01], [10_000_000, 0.001]]             
+            entropy_coeff_schedule=[[0, 0.05], [5_000_000, 0.01], [10_000_000, 0.005]]             
         )
     )
 
