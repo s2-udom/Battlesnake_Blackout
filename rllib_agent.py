@@ -7,18 +7,17 @@ from flask import Flask, request, jsonify
 
 from blackout_env import BattlesnakeBlackoutEnv
 
+app = Flask(__name__)
+
 # ---------------------------------------------------------
-# 1. PyTorch Architecture (Reflecting true RLlib mixed padding)
+# 1. PyTorch Architecture
 # ---------------------------------------------------------
 class BattlesnakeNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.cnn = nn.Sequential(
-            # Layer 1: Same padding (padding=1 keeps it 11x11)
             nn.Conv2d(22, 16, kernel_size=3, stride=1, padding=1), nn.ReLU(),
-            # Layer 2: Same padding (padding=1 keeps it 11x11)
             nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1), nn.ReLU(),
-            # Layer 3: Valid padding (padding=0 shrinks it to 9x9)
             nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=0), nn.ReLU(),
             nn.Flatten()
         )
@@ -35,11 +34,10 @@ class BattlesnakeNet(nn.Module):
 # ---------------------------------------------------------
 # 2. Server Setup & Engine Initialization
 # ---------------------------------------------------------
-app = Flask(__name__)
-
 print("Loading Neural Network...")
 model = BattlesnakeNet()
-model.load_state_dict(torch.load("battlesnake_weights.pth", map_location=torch.device('cpu')), strict=True)
+weights_path = os.path.join(os.path.dirname(__file__), "battlesnake_weights.pth")
+model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')), strict=True)
 model.eval()
 
 print("Initializing hisss Engine...")
@@ -51,8 +49,30 @@ agent_memories = {}
 ACTION_MAP = {0: "up", 1: "right", 2: "down", 3: "left"}
 
 # ---------------------------------------------------------
-# 3. The Perfect Observation Builder
+# 3. Robust Observation Builder & C++ Protection
 # ---------------------------------------------------------
+def _get_clean_body(body_list, expected_length, fallback_pt):
+    clean = []
+    for pt in body_list:
+        if pt is not None:
+            px = pt.get("x") if isinstance(pt, dict) else getattr(pt, "x", None)
+            py = pt.get("y") if isinstance(pt, dict) else getattr(pt, "y", None)
+            if px is not None and py is not None:
+                clean.append((np.int32(px), np.int32(py)))
+            else:
+                break
+        else:
+            break
+            
+    if not clean:
+        clean = [fallback_pt]
+        
+    last_known_pt = clean[-1]
+    while len(clean) < expected_length:
+        clean.append(last_known_pt)
+        
+    return clean
+
 def build_perfect_observation(game_state, memory_key):
     global dummy_env, agent_memories
     
@@ -60,7 +80,12 @@ def build_perfect_observation(game_state, memory_key):
     you = game_state["you"]
     my_id = you["id"]
     
-    cpp_state.snake_pos[0] = [(np.int32(pt["x"]), np.int32(pt["y"])) for pt in you["body"]]
+    my_head = you["body"][0]
+    hx = my_head.get("x") if isinstance(my_head, dict) else getattr(my_head, "x", 0)
+    hy = my_head.get("y") if isinstance(my_head, dict) else getattr(my_head, "y", 0)
+    my_head_fallback = (np.int32(hx), np.int32(hy))
+    
+    cpp_state.snake_pos[0] = _get_clean_body(you["body"], you["length"], my_head_fallback)
     cpp_state.snake_health[0] = np.int32(you["health"])
     cpp_state.snake_len[0] = np.int32(you["length"])
     
@@ -71,19 +96,23 @@ def build_perfect_observation(game_state, memory_key):
         if opp["id"] == my_id: continue
         if opp["id"] not in enemy_map:
             available_indices = [idx for idx in [1, 2, 3] if idx not in enemy_map.values()]
-            if available_indices: enemy_map[opp["id"]] = available_indices[0]
+            if available_indices: 
+                enemy_map[opp["id"]] = available_indices[0]
         if opp["id"] in enemy_map:
             alive_opponents_by_index[enemy_map[opp["id"]]] = opp
             
     for i in range(1, 4):
         opp = alive_opponents_by_index[i]
         if opp is not None:
-            cpp_state.snake_pos[i] = [(np.int32(pt["x"]), np.int32(pt["y"])) for pt in opp["body"]]
+            cpp_state.snake_pos[i] = _get_clean_body(opp["body"], opp["length"], my_head_fallback)
             cpp_state.snake_health[i] = np.int32(opp["health"])
             cpp_state.snake_len[i] = np.int32(opp["length"])
         else:
             survivors = [o for o in alive_opponents_by_index.values() if o is not None]
-            safe_body = [(np.int32(pt["x"]), np.int32(pt["y"])) for pt in survivors[0]["body"]] if survivors else [(np.int32(you["body"][-1]["x"]), np.int32(you["body"][-1]["y"]))]
+            if survivors:
+                safe_body = _get_clean_body(survivors[0]["body"], survivors[0]["length"], my_head_fallback)
+            else:
+                safe_body = [my_head_fallback]
             cpp_state.snake_pos[i] = safe_body
             cpp_state.snake_health[i] = np.int32(0)
             cpp_state.snake_len[i] = np.int32(0)
@@ -103,42 +132,74 @@ def build_perfect_observation(game_state, memory_key):
 # ---------------------------------------------------------
 def get_safe_actions(game_state):
     head = game_state["you"]["body"][0]
+    hx = head.get("x") if isinstance(head, dict) else getattr(head, "x", 0)
+    hy = head.get("y") if isinstance(head, dict) else getattr(head, "y", 0)
     width, height = game_state["board"]["width"], game_state["board"]["height"]
-    potential_moves = {0: (head["x"], head["y"] + 1), 1: (head["x"] + 1, head["y"]), 2: (head["x"], head["y"] - 1), 3: (head["x"] - 1, head["y"])}
     
-    unsafe_coords = {(pt["x"], pt["y"]) for snake in game_state["board"]["snakes"] for pt in snake["body"][:-1]}
-    return [act for act, (x, y) in potential_moves.items() if 0 <= x < width and 0 <= y < height and (x, y) not in unsafe_coords]
+    potential_moves = {
+        0: (hx, hy + 1), 
+        1: (hx + 1, hy), 
+        2: (hx, hy - 1), 
+        3: (hx - 1, hy)
+    }
+    
+    unsafe_coords = set()
+    for snake in game_state["board"]["snakes"]:
+        for pt in snake["body"][:-1]:
+            if pt is not None:
+                px = pt.get("x") if isinstance(pt, dict) else getattr(pt, "x", None)
+                py = pt.get("y") if isinstance(pt, dict) else getattr(pt, "y", None)
+                if px is not None and py is not None:
+                    unsafe_coords.add((px, py))
+                    
+    return [
+        act for act, (x, y) in potential_moves.items() 
+        if 0 <= x < width and 0 <= y < height and (x, y) not in unsafe_coords
+    ]
 
 # ---------------------------------------------------------
-# 5. API Routes
+# 5. Flask API Routes (Strict application/json headers)
 # ---------------------------------------------------------
 @app.get("/")
 def on_info():
-    return jsonify({"apiversion": "1", "author": "PyTorch_Agent", "color": "#8800FF", "head": "all-seeing", "tail": "bolt"})
+    return jsonify({
+        "apiversion": "1", 
+        "author": "PyTorch_Agent", 
+        "color": "#8800FF", 
+        "head": "all-seeing", 
+        "tail": "bolt"
+    })
 
 @app.post("/start")
 def on_start():
     game_state = request.get_json()
-    game_id, snake_id = game_state["game"]["id"], game_state["you"]["id"]
+    game_id = game_state["game"]["id"]
+    snake_id = game_state["you"]["id"]
     memory_key = f"{game_id}_{snake_id}"
     
     enemy_map = {opp["id"]: idx + 1 for idx, opp in enumerate(game_state["board"]["snakes"]) if opp["id"] != snake_id}
-    agent_memories[memory_key] = {"h": torch.zeros(1, 256), "c": torch.zeros(1, 256), "enemy_map": enemy_map}
-    return "ok"
+    agent_memories[memory_key] = {
+        "h": torch.zeros(1, 256), 
+        "c": torch.zeros(1, 256), 
+        "enemy_map": enemy_map
+    }
+    return jsonify({})
 
 @app.post("/move")
 def on_move():
     game_state = request.get_json()
     memory_key = f"{game_state['game']['id']}_{game_state['you']['id']}"
     
-    if memory_key not in agent_memories: on_start()
+    if memory_key not in agent_memories:
+        on_start()
     mem = agent_memories[memory_key]
     
     with env_lock:
         with torch.no_grad():
             obs = build_perfect_observation(game_state, memory_key)
             logits, new_h, new_c = model(obs, mem["h"], mem["c"])
-            agent_memories[memory_key]["h"], agent_memories[memory_key]["c"] = new_h, new_c
+            agent_memories[memory_key]["h"] = new_h
+            agent_memories[memory_key]["c"] = new_c
             action_int = torch.argmax(logits, dim=1).item()
 
     safe_actions = get_safe_actions(game_state)
@@ -153,10 +214,11 @@ def on_move():
 def on_end():
     game_state = request.get_json()
     memory_key = f"{game_state['game']['id']}_{game_state['you']['id']}"
-    if memory_key in agent_memories: del agent_memories[memory_key]
-    return "ok"
+    if memory_key in agent_memories:
+        del agent_memories[memory_key]
+    return jsonify({})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
-    print(f"Starting Battlesnake server on port {port}...")
+    print(f"Starting Battlesnake Flask server on port {port}...")
     app.run(host="0.0.0.0", port=port)

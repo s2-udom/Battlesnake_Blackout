@@ -1,7 +1,6 @@
 import json
 import pytest
 
-# Import the standalone Flask app from your new optimized server script
 from rllib_agent import app
 
 @pytest.fixture(scope="module")
@@ -30,7 +29,7 @@ GAME_STATE = {
     },
     "board": {
         "height": 11, "width": 11,
-        "food": [{"x": 3, "y": 3, "spawn_turn": 0}],
+        "food": [{"x": 3, "y": 3}],
         "hazards": [],
         "snakes": [{
             "id": "you", "name": "test", "length": 3,
@@ -50,7 +49,7 @@ GAME_STATE = {
 }
 
 def test_index(client):
-    """Tests if the root directory returns the snake's appearance."""
+    """Tests if the root endpoint returns the snake configuration."""
     r = client.get('/')
     assert r.status_code == 200
     data = json.loads(r.data)
@@ -58,16 +57,19 @@ def test_index(client):
     assert 'head' in data
     assert 'tail' in data
 
-def test_move_returns_valid_direction(client):
-    """Tests if the neural network and safety shield return a valid move."""
-    # 1. Initialize the LSTM memory state
-    client.post('/start', json=GAME_STATE)
-    
-    # 2. Request a move
-    r = client.post('/move', json=GAME_STATE)
-    assert r.status_code == 200
-    
-    # 3. Verify the move is valid
-    data = json.loads(r.data)
+def test_game_lifecycle(client):
+    """Tests /start, /move, and /end endpoints via HTTP test client."""
+    # 1. Start the game (initializes LSTM state in memory)
+    r_start = client.post('/start', json=GAME_STATE)
+    assert r_start.status_code == 200
+
+    # 2. Request a move (runs model inference and safety fallback)
+    r_move = client.post('/move', json=GAME_STATE)
+    assert r_move.status_code == 200
+    data = json.loads(r_move.data)
     assert 'move' in data
     assert data['move'] in ['up', 'down', 'left', 'right']
+
+    # 3. End the game (cleans up LSTM state)
+    r_end = client.post('/end', json=GAME_STATE)
+    assert r_end.status_code == 200
