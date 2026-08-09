@@ -203,25 +203,36 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                 my_head = head_coords_pre_step.get(agent_id)
                 if my_head:
                     hx, hy = my_head[0], my_head[1]
-                    if hx <= 1 or hx >= 13 or hy <= 1 or hy >= 13: step_reward -= 0.1
-                    elif 4 <= hx <= 10 and 4 <= hy <= 10: step_reward += 0.05
+                    if hx <= 1 or hx >= 13 or hy <= 1 or hy >= 13: 
+                        step_reward -= 0.1
+                    
+                    # CHANGED: Removed the 'center control' +0.05 bonus entirely.
+                    # In Blackout, the center is a death trap.
+                    
                     for other_id in alive_ids:
                         if other_id != i:
                             enemy_body = pre_step_state.snake_pos[other_id]
-                            for segment in enemy_body[1:]:
+                            # CHANGED: Added [1:-1] to ignore the very last segment (the tail).
+                            # This teaches the agent the advanced "tail chasing" maneuver.
+                            for segment in enemy_body[1:-1]:
                                 dist_to_segment = abs(hx - segment[0]) + abs(hy - segment[1])
-                                if dist_to_segment == 1: step_reward -= 0.15 
+                                if dist_to_segment == 1: 
+                                    step_reward -= 0.15 
                         
                 rewards[agent_id] = step_reward
                 
                 current_true_length = int(current_state.snake_len[i])
                 current_true_health = int(current_state.snake_health[i])
                 
+                # CHANGED: Dynamic Food Rewards. 
+                # Scales the reward based on how starving the snake was before eating.
                 if current_true_length > self.previous_lengths.get(agent_id, 3):
-                    rewards[agent_id] += 3.0
+                    hunger_multiplier = (100.0 - float(current_true_health)) / 100.0
+                    eating_reward = 1.0 + (6.0 * hunger_multiplier)
+                    rewards[agent_id] += eating_reward
                     self.previous_lengths[agent_id] = current_true_length
                 
-# Remove the old "current_true_health < 50" block and replace it with:
+                # Health deficit penalty (Already working perfectly, left as-is)
                 health_deficit = (100 - current_true_health) * 0.02
                 rewards[agent_id] -= health_deficit
                     
@@ -234,8 +245,14 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                             dead_len = lengths_pre_step.get(dead_id, 3)
                             head_dist = abs(my_head[0] - dead_head[0]) + abs(my_head[1] - dead_head[1])
                             
-                            if head_dist <= 2 and my_length > dead_len:
-                                rewards[agent_id] += 5.0
+                            if head_dist <= 2:
+                                if my_length > dead_len:
+                                    # We had a length advantage and killed them head-to-head
+                                    rewards[agent_id] += 5.0
+                                else:
+                                    # CHANGED: The 50/50 Gamble Deterrent.
+                                    # Penalizes the agent for engaging in equal/smaller head-on collisions.
+                                    rewards[agent_id] -= 3.0
                             else:
                                 is_trap = False
                                 for segment in my_body[1:]:
@@ -243,7 +260,8 @@ class BattlesnakeBlackoutEnv(MultiAgentEnv):
                                     if body_dist <= 1: 
                                         is_trap = True
                                         break
-                                if is_trap: rewards[agent_id] += 7.0
+                                if is_trap: 
+                                    rewards[agent_id] += 7.0
 
             if terminations[agent_id]:
                 self.terminated_agents.add(agent_id)
